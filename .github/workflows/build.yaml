@@ -117,6 +117,14 @@ jobs:
           
           # 验证 CMake 版本
           cmake --version
+
+          # 3. 手动下载并配置 appimagetool (用于打包 AppImage) 👈 新增部分
+          wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          # 容器内无 FUSE 支持，需使用 --appimage-extract 解压后运行
+          ./appimagetool-x86_64.AppImage --appimage-extract
+          mv squashfs-root /opt/appimagetool
+          ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
           
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
