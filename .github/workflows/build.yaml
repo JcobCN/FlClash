@@ -18,9 +18,6 @@ jobs:
           - platform: windows
             os: Windows-2022
             arch: amd64
-          - platform: linux
-            os: ubuntu-22.04
-            arch: amd64
           - platform: macos
             os: macos-15-intel
             arch: amd64
@@ -71,6 +68,7 @@ jobs:
           channel: stable
           flutter-version: 3.35.7
           cache: true
+          
       - name: Setup Flutter With Other
         if: startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')
         uses: subosito/flutter-action@v2
@@ -94,9 +92,57 @@ jobs:
           path: ./dist
           overwrite: true
 
+  # 专门用于编译支持老版本 Linux (如 Deepin 20/Debian 10) 的 Job
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:10
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y curl git unzip xz-utils zip libglu1-mesa clang cmake ninja-build pkg-config libgtk-3-dev build-essential
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Setup & Build
+        run: dart setup.dart linux --arch amd64 ${{ env.IS_STABLE == 'true' && '--env stable' || '' }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-linux-amd64
+          path: ./dist
+          overwrite: true
+
   changelog:
     runs-on: ubuntu-latest
-    needs: [ build ]
+    needs: [ build, build-linux-amd64 ]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -145,13 +191,12 @@ jobs:
               exit 1
             fi
           fi
-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload:
     permissions: write-all
-    needs: [ build ]
+    needs: [ build, build-linux-amd64 ]
     runs-on: ubuntu-latest
     services:
       telegram-bot-api:
@@ -245,4 +290,3 @@ jobs:
           target-branch: main
           commit-message: Update from ${{ github.ref_name }}
           target-directory: /tmp/
-
