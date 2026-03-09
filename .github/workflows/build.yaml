@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
+  workflow_dispatch:  # 允许网页端手动触发
+
 env:
   IS_STABLE: ${{ !contains(github.ref, '-') }}
 
 jobs:
   build:
+    if: false  # 暂时禁用原有的全平台编译，仅调试 Linux
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -25,75 +27,15 @@ jobs:
           - platform: macos
             os: macos-latest
             arch: arm64
-          #          - platform: windows
-          #            os: windows-11-arm
-          #            arch: arm64
           - platform: linux
             os: ubuntu-24.04-arm
             arch: arm64
 
     steps:
-      - name: Setup rust
-        if: startsWith(matrix.os, 'windows-11-arm')
-        run: |
-          Invoke-WebRequest -Uri "https://win.rustup.rs/aarch64" -OutFile rustup-init.exe
-          .\rustup-init.exe -y --default-toolchain stable
-          $cargoPath = "$env:USERPROFILE\.cargo\bin"
-          Add-Content $env:GITHUB_PATH $cargoPath
-
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Setup Android Signing
-        if: startsWith(matrix.platform,'android')
-        run: |
-          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/keystore.jks
-          echo "${{ secrets.SERVICE_JSON }}" | base64 --decode > android/app/google-services.json
-          echo "keyAlias=${{ secrets.KEY_ALIAS }}" >> android/local.properties
-          echo "storePassword=${{ secrets.STORE_PASSWORD }}" >> android/local.properties
-          echo "keyPassword=${{ secrets.KEY_PASSWORD }}" >> android/local.properties
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24.0'
-          cache-dependency-path: |
-            core/go.sum
-
-      - name: Setup Flutter
-        if: ${{ !(startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')) }}
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          flutter-version: 3.35.7
-          cache: true
-          
-      - name: Setup Flutter With Other
-        if: startsWith(matrix.os, 'windows-11-arm') || startsWith(matrix.os, 'ubuntu-24.04-arm')
-        uses: subosito/flutter-action@v2
-        with:
-          channel: master
-          flutter-version: 3.35.7
-          cache: true
-
-      - name: Get Flutter Dependency
-        run: |
-          flutter --version
-          flutter pub get
-
-      - name: Setup
-        run: dart setup.dart ${{ matrix.platform }} ${{ matrix.arch && format('--arch {0}', matrix.arch) }} ${{ env.IS_STABLE == 'true' && '--env stable' || '' }}
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: artifact-${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) }}
-          path: ./dist
-          overwrite: true
-
-  # 专门用于编译支持老版本 Linux (如 Deepin 20/Debian 10) 的 Job
+  # 专门用于编译支持老版本 Linux 的 Job
   build-linux-amd64:
     runs-on: ubuntu-latest
     container:
@@ -101,31 +43,23 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          # 替换 Debian 10 的源为归档源 (Archive)，并禁用过期检查
           echo "deb http://archive.debian.org/debian buster main" > /etc/apt/sources.list
           echo "deb http://archive.debian.org/debian-security buster/updates main" >> /etc/apt/sources.list
           echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until
           
-          # 重新更新并安装依赖
           apt-get update
-          apt-get install -y wget curl git unzip xz-utils zip libglu1-mesa clang cmake ninja-build pkg-config libgtk-3-dev build-essential jq libkeybinder-3.0-dev libappindicator3-dev file patchelf rpm
-
-          # 2. 手动下载并安装高版本的 CMake (3.25.3)
+          apt-get install -y curl wget git unzip xz-utils zip libglu1-mesa clang ninja-build pkg-config libgtk-3-dev build-essential jq libkeybinder-3.0-dev libappindicator3-dev file patchelf rpm
+          
           wget https://github.com/Kitware/CMake/releases/download/v3.25.3/cmake-3.25.3-linux-x86_64.sh
           chmod +x cmake-3.25.3-linux-x86_64.sh
           ./cmake-3.25.3-linux-x86_64.sh --skip-license --prefix=/usr/local
           
-          # 验证 CMake 版本
-          cmake --version
-
-          # 3. 手动下载并配置 appimagetool (用于打包 AppImage) 👈 新增部分
           wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool-x86_64.AppImage
-          # 容器内无 FUSE 支持，需使用 --appimage-extract 解压后运行
           ./appimagetool-x86_64.AppImage --appimage-extract
           mv squashfs-root /opt/appimagetool
           ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
-          
+
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
 
@@ -138,8 +72,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.0'
-          cache-dependency-path: |
-            core/go.sum
+          cache-dependency-path: core/go.sum
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -156,7 +89,7 @@ jobs:
       - name: Setup & Build
         run: dart setup.dart linux --arch amd64 ${{ env.IS_STABLE == 'true' && '--env stable' || '' }}
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: artifact-linux-amd64
@@ -165,70 +98,49 @@ jobs:
 
   changelog:
     runs-on: ubuntu-latest
-    needs: [ build, build-linux-amd64 ]
+    needs: [ build-linux-amd64 ]
+    # 👈 核心修改：只有真正 push tag 时，才去修改和提交 CHANGELOG.md 文件，防止手动触发污染代码库
+    if: github.event_name == 'push' && env.IS_STABLE == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        if: ${{ env.IS_STABLE == 'true' }}
         with:
           fetch-depth: 0
           ref: refs/heads/main
       - name: Generate
-        if: ${{ env.IS_STABLE == 'true' }}
         run: |
           last_ver=$(grep -m1 '^## ' CHANGELOG.md 2>/dev/null | sed 's/^## //')
-          
           tags=($(git tag --merged HEAD --sort=-creatordate))
-          
           temp="NEW_CHANGELOG.md" > "$temp"
-          
           for i in "${!tags[@]}"; do
               curr="${tags[i]}"
               [[ "$curr" == "$last_ver" ]] && break
-          
               prev="${tags[i+1]}"
               range="${prev:+$prev..}$curr"
-          
               echo -e "## $curr\n" >> "$temp"
               git log --no-merges --pretty=format:"%B" "$range" | \
               awk '!/Update changelog/ && NF {print "- " $0 "\n"}' >> "$temp"
           done
           [ -f CHANGELOG.md ] && cat CHANGELOG.md >> "$temp"
-          
           mv "$temp" CHANGELOG.md
 
       - name: Commit
-        if: ${{ env.IS_STABLE == 'true' }}
         run: |
           git add CHANGELOG.md
           if ! git diff --cached --quiet; then
-            echo "Commit pushing"
             git config --local user.email "chen08209@gmail.com"
             git config --local user.name "chen08209"
             git commit -m "Update changelog"
             git push
-            if [ $? -eq 0 ]; then
-              echo "Push succeeded"
-            else
-              echo "Push failed"
-              exit 1
-            fi
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   upload:
     permissions: write-all
-    needs: [ build, build-linux-amd64 ]
+    needs: [ build-linux-amd64 ]
+    # 👈 取消了环境限制，确保手动触发也能进到这一步
     runs-on: ubuntu-latest
-    services:
-      telegram-bot-api:
-        image: aiogram/telegram-bot-api:latest
-        env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-        ports:
-          - 8081:8081
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -244,41 +156,34 @@ jobs:
 
       - name: Generate release.md
         run: |
-          tags=($(git tag --merged HEAD --sort=-creatordate))
-          preTag=$(curl -s "https://api.github.com/repos/chen08209/FlClash/releases/latest" | \
-          sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p')
-          
-          [ -z "$preTag" ] && preTag=""
-          
-          out="release.md" > "$out"
-          
-          for i in "${!tags[@]}"; do
-            curr="${tags[i]}"
-            [[ "$curr" == "$preTag" ]] && break
-          
-            prev="${tags[i+1]}"
-            range="${prev:+$prev..}$curr"
-          
-            git log --no-merges --pretty=format:"%B" "$range" | \
-            awk '!/Update changelog/ && NF {print "- " $0 "\n"}' >> "$out"
-          done
-      - name: Push to telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-          python release_telegram.py
+          # 👈 核心修改：针对手动触发生成不同的 Release 文本说明
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "这是手动触发的内测构建版本 (基于分支: ${{ github.ref_name }})。" > release.md
+            echo "构建时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> release.md
+          else
+            tags=($(git tag --merged HEAD --sort=-creatordate))
+            preTag=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p')
+            [ -z "$preTag" ] && preTag=""
+            out="release.md" > "$out"
+            for i in "${!tags[@]}"; do
+              curr="${tags[i]}"
+              [[ "$curr" == "$preTag" ]] && break
+              prev="${tags[i+1]}"
+              range="${prev:+$prev..}$curr"
+              git log --no-merges --pretty=format:"%B" "$range" | \
+              awk '!/Update changelog/ && NF {print "- " $0 "\n"}' >> "$out"
+            done
+          fi
 
       - name: Patch release.md
+        if: github.event_name == 'push' # 手动触发不需要合入正式版 template
         run: |
           version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
-          sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
+          if [ -f "./.github/release_template.md" ]; then
+            sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
+          fi
 
       - name: Generate sha256
-        if: env.IS_STABLE == 'true'
         run: |
           cd ./dist
           for file in $(find . -type f -not -name "*.sha256"); do
@@ -286,30 +191,11 @@ jobs:
           done  
 
       - name: Release
-        if: ${{ env.IS_STABLE == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
+          # 👈 核心修改：手动触发时，强制把 tag 和名字设为 "nightly"
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && 'nightly' || github.ref_name }}
+          name: ${{ github.event_name == 'workflow_dispatch' && 'Nightly Build (内测版)' || github.ref_name }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           files: ./dist/*
           body_path: './release.md'
-
-      - name: Create Fdroid Source Dir
-        if: ${{ env.IS_STABLE == 'true' }}
-        run: |
-          mkdir -p ./tmp
-          cp ./dist/*android-arm64-v8a* ./tmp/ || true
-          echo "Files copied successfully"
-
-      - name: Push to fdroid repo
-        if: ${{ env.IS_STABLE == 'true' }}
-        uses: cpina/github-action-push-to-another-repository@v1.7.2
-        env:
-          SSH_DEPLOY_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
-        with:
-          source-directory: ./tmp/
-          destination-github-username: chen08209
-          destination-repository-name: FlClash-fdroid-repo
-          user-name: 'github-actions[bot]'
-          user-email: 'github-actions[bot]@users.noreply.github.com'
-          target-branch: main
-          commit-message: Update from ${{ github.ref_name }}
-          target-directory: /tmp/
