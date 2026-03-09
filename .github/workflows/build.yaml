@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [ build-linux-amd64 ]
     # 👈 核心修改：只有真正 push tag 时，才去修改和提交 CHANGELOG.md 文件，防止手动触发污染代码库
-    if: github.event_name == 'push' && env.IS_STABLE == 'true'
+    if: github.event_name == 'push' && !contains(github.ref, '-')
     steps:
       - name: Checkout
         uses: actions/checkout@v4
